@@ -130,10 +130,116 @@ async def test_status_includes_pending_permissions(
 
 
 async def test_permission_reply_validation(service: DelegationService) -> None:
+    from agent_gateway.executors.base import PermissionRequestInfo
+
+    class PermExecutor(FakeExecutor):
+        async def pending_permissions(self):
+            return [
+                PermissionRequestInfo(
+                    id="per_1",
+                    session_id="ses_fake",
+                    permission="bash",
+                    patterns=["*"],
+                )
+            ]
+
+    service._executors["fake"] = PermExecutor()
     with pytest.raises(InvalidRequestError):
         await service.reply_permission("fake", "per_1", "maybe")
     result = await service.reply_permission("fake", "per_1", "reject")
     assert result["processed"] is True
+
+
+async def test_reply_permission_unknown_request_rejected(
+    service: DelegationService,
+) -> None:
+    from agent_gateway.errors import PermissionGatewayError
+
+    with pytest.raises(PermissionGatewayError):
+        await service.reply_permission("fake", "per_ghost", "reject")
+
+
+async def test_reply_permission_unauthorized_session_rejected() -> None:
+    from agent_gateway.errors import PermissionGatewayError
+    from agent_gateway.executors.base import PermissionRequestInfo
+
+    OUTSIDE = Path("C:/Users/dev/Desktop")  # outside allowed root
+
+    class BadPermExecutor(FakeExecutor):
+        async def pending_permissions(self):
+            return [
+                PermissionRequestInfo(
+                    id="per_1",
+                    session_id="ses_evil",
+                    permission="bash",
+                    patterns=["*"],
+                )
+            ]
+
+        async def session_info(self, session_id):
+            return SessionInfo(id=session_id, directory=str(OUTSIDE))
+
+    executors = {"fake": BadPermExecutor()}
+    svc = DelegationService(executors, PathPolicy([ROOT]))
+    with pytest.raises(UnauthorizedDirectoryError):
+        await svc.reply_permission("fake", "per_1", "once")
+
+
+async def test_pending_permissions_drops_unauthorized_sessions() -> None:
+    from agent_gateway.executors.base import PermissionRequestInfo
+
+    OUTSIDE = Path("C:/Users/dev/Desktop")
+
+    class MixedExecutor(FakeExecutor):
+        async def pending_permissions(self):
+            return [
+                PermissionRequestInfo(
+                    id="per_good", session_id="ses_fake", permission="bash"
+                ),
+                PermissionRequestInfo(
+                    id="per_bad", session_id="ses_evil", permission="bash"
+                ),
+            ]
+
+        async def session_info(self, session_id):
+            directory = str(ROOT) if session_id == "ses_fake" else str(OUTSIDE)
+            return SessionInfo(id=session_id, directory=directory)
+
+    executors = {"fake": MixedExecutor()}
+    svc = DelegationService(executors, PathPolicy([ROOT]))
+    listed = await svc.pending_permissions("fake")
+    ids = [item["id"] for item in listed]
+    assert ids == ["per_good"]
+    assert "per_bad" not in ids
+
+
+async def test_session_reauthorized_from_backend_after_restart() -> None:
+    """No registry entry (simulating gateway restart): the backend
+    directory is fetched and must still be inside the allowed roots."""
+    service = DelegationService({"fake": FakeExecutor()}, PathPolicy([ROOT]))
+    result = await service.continue_task("fake", "ses_unknown", "follow up")
+    assert result["directory"] == str(ROOT)
+    assert service.lookup("ses_unknown") is not None
+
+
+async def test_session_reauthorization_fails_closed_when_directory_moves_out() -> None:
+    OUTSIDE = Path("C:/Users/dev/Desktop")
+
+    class MovedExecutor(FakeExecutor):
+        async def session_info(self, session_id):
+            return SessionInfo(id=session_id, directory=str(OUTSIDE))
+
+    executors = {"fake": MovedExecutor()}
+    svc = DelegationService(executors, PathPolicy([ROOT]))
+    with pytest.raises(UnauthorizedDirectoryError):
+        await svc.messages("fake", "ses_moved")
+
+
+async def test_status_reports_completion_from_executor() -> None:
+    service = DelegationService({"fake": FakeExecutor()}, PathPolicy([ROOT]))
+    status = await service.status("fake", "ses_fake")
+    assert status["state"] == "idle"
+    assert status["completed"] is True
 
 
 async def test_messages_and_diff(service: DelegationService) -> None:

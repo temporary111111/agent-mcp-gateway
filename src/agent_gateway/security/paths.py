@@ -30,6 +30,10 @@ class PathPolicy:
         return [str(root) for root in self._roots]
 
     def _is_within(self, candidate: Path, root: Path) -> bool:
+        return PathPolicy.is_within(candidate, root)
+
+    @staticmethod
+    def is_within(candidate: Path, root: Path) -> bool:
         candidate_norm = _normalize(candidate)
         root_norm = _normalize(root)
         if candidate_norm == root_norm:

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-gateway"
-version = "0.1.0"
-description = "Generic local agent gateway that exposes local coding agents (OpenCode) to ChatGPT via MCP over Streamable HTTP."
+version = "0.2.0"
+description = "MCP Agent Gateway: deterministic direct-mode tools (filesystem, search, process, git) for ChatGPT, with optional OpenCode agent delegation."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.27",
     "pydantic>=2",
     "python-dotenv>=1",
+    "uvicorn>=0.27",
 ]
 
 [project.optional-dependencies]
@@ -33,4 +34,5 @@ testpaths = ["tests"]
 markers = [
     "integration: requires a live OpenCode server",
     "e2e: full gateway end-to-end test",
+    "opencode: requires ENABLE_OPENCODE_AGENT=true and a live OpenCode server",
 ]

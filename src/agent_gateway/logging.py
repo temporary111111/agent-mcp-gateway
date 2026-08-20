@@ -11,6 +11,7 @@ SENSITIVE_ENV_KEYS = {
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "OPENCODE_TOKEN",
+    "AGENT_GATEWAY_TOKEN",
 }
 
 _ROOT_LOGGER = "agent_gateway"

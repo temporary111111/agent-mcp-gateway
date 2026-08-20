@@ -1,3 +1,3 @@
-"""Agent Gateway - a generic local agent gateway exposed via MCP."""
+"""Agent Gateway - deterministic direct-mode MCP tools + optional agent executors."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

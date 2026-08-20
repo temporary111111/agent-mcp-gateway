@@ -24,6 +24,7 @@ def test_custom_values() -> None:
             "MCP_HOST": "0.0.0.0",
             "MCP_PORT": "9001",
             "PUBLIC_MCP_HOST": "https://example.trycloudflare.com",
+            "AGENT_GATEWAY_TOKEN": "s3cr3t-token",
             "OPENCODE_URL": "http://127.0.0.1:5000/",
             "OPENCODE_USERNAME": "opencode",
             "OPENCODE_PASSWORD": "secret",

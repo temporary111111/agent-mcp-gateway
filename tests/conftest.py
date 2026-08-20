@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 from pathlib import Path
 
@@ -31,7 +32,7 @@ def path_policy() -> PathPolicy:
     return PathPolicy([REPO_ROOT])
 
 
-def backend_reachable(timeout: float = 2.0) -> bool:
+def backend_reachable(timeout: float = 5.0) -> bool:
     import asyncio
 
     async def _check() -> bool:
@@ -53,6 +54,13 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
+def opencode_mode_enabled() -> bool:
+    return (
+        os.environ.get("ENABLE_OPENCODE_AGENT", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+
+
 needs_backend = pytest.mark.skipif(
     not backend_reachable(),
     reason="OpenCode backend not reachable at 127.0.0.1:4096",
@@ -61,4 +69,12 @@ needs_backend = pytest.mark.skipif(
 needs_repo = pytest.mark.skipif(
     not REPO_ROOT.is_dir(),
     reason=f"Sample repo not present at {REPO_ROOT}",
+)
+
+needs_opencode_mode = pytest.mark.skipif(
+    not opencode_mode_enabled(),
+    reason=(
+        "OpenCode agent mode is optional and disabled by default; set "
+        "ENABLE_OPENCODE_AGENT=true to run OpenCode-specific tests"
+    ),
 )

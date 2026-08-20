@@ -145,3 +145,22 @@ class Executor(ABC):
     def capabilities(self) -> set[str]:
         """Extra capabilities exposed via executor-specific tools."""
         return set()
+
+    async def is_completed(self, session_id: str) -> bool:
+        """Whether the session's latest work is actually finished.
+
+        Default: an idle session counts as completed. Backends that can
+        distinguish "idle but still generating" from "done" should
+        override this (OpenCode checks message finish markers).
+        """
+        return True
+
+    async def find_origin_message_id(
+        self, session_id: str, max_attempts: int = 5
+    ) -> str | None:
+        """Best-effort capture of the message ID that started the work.
+
+        Used for message-scoped diffs; may return None when the backend
+        does not expose message IDs.
+        """
+        return None

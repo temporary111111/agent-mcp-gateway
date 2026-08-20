@@ -266,6 +266,50 @@ class OpenCodeExecutor(Executor):
         logger.info("OpenCode session aborted: session=%s", session_id)
         return aborted
 
+    async def is_completed(self, session_id: str) -> bool:
+        """Completion heuristic: idle AND the last assistant turn finished.
+
+        An idle state alone is NOT proof of completion: after a tool-call
+        turn the session rests briefly with finish=\"tool-calls\" before
+        processing results. Only finish=\"stop\" means the session work is
+        actually done and the diff snapshot is final.
+        """
+        status = await self.status(session_id)
+        if status.state in ("busy", "retry"):
+            return False
+        messages = await self.messages(session_id, limit=5)
+        assistant = [m for m in messages if m.role == "assistant"]
+        if not assistant:
+            return True
+        last = assistant[-1]  # messages are oldest-first
+        return last.finish == "stop"
+
+    async def find_origin_message_id(
+        self, session_id: str, max_attempts: int = 5
+    ) -> str | None:
+        """Best-effort capture of the newest user message ID.
+
+        prompt_async returns 204 with no body, so the originating user
+        message is discovered by listing messages shortly after dispatch.
+        Message-scoped diffs use this ID when available.
+        """
+        import asyncio
+
+        for attempt in range(max_attempts):
+            try:
+                messages = await self.messages(session_id, limit=20)
+            except GatewayError:
+                return None
+            user_messages = [m for m in messages if m.role == "user"]
+            if user_messages:
+                return user_messages[0].id
+            await asyncio.sleep(0.2)
+        logger.warning(
+            "Could not capture originating user message ID for session %s",
+            session_id,
+        )
+        return None
+
     async def pending_permissions(self) -> list[PermissionRequestInfo]:
         requests = await self._client.pending_permissions()
         return [

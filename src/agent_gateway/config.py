@@ -11,6 +11,12 @@ from .errors import ConfigError
 
 DEFAULT_OPENCODE_URL = "http://127.0.0.1:4096"
 
+DEFAULT_MAX_READ_BYTES = 200_000
+DEFAULT_MAX_TREE_ENTRIES = 1_000
+DEFAULT_MAX_SEARCH_RESULTS = 200
+DEFAULT_MAX_PROCESS_OUTPUT_BYTES = 100_000
+DEFAULT_PROCESS_TIMEOUT_MAX = 300
+
 
 def _parse_float_env(
     env: Mapping[str, str],
@@ -35,16 +41,37 @@ def _parse_float_env(
     return value
 
 
-def _parse_int_env(env: Mapping[str, str], name: str, default: int) -> int:
+def _parse_int_env(
+    env: Mapping[str, str], name: str, default: int, *, minimum: int = 0
+) -> int:
     raw = env.get(name, "").strip()
     if not raw:
         return default
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError as exc:
         raise ConfigError(
             f"Environment variable {name} must be an integer, got {raw!r}."
         ) from exc
+    if value < minimum:
+        raise ConfigError(
+            f"Environment variable {name} must be >= {minimum}, got {value}."
+        )
+    return value
+
+
+def _parse_bool_env(env: Mapping[str, str], name: str, default: bool) -> bool:
+    raw = env.get(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(
+        f"Environment variable {name} must be a boolean (true/false), "
+        f"got {raw!r}."
+    )
 
 
 def parse_allowed_roots(raw: str | None) -> tuple[Path, ...]:
@@ -78,6 +105,15 @@ class Config:
     opencode_read_timeout: float = 60.0
     opencode_write_timeout: float = 30.0
     opencode_pool_timeout: float = 5.0
+    enable_opencode_agent: bool = False
+    enable_commands: bool = False
+    gateway_token: str = ""
+    insecure_no_token_opt_out: bool = False
+    max_read_bytes: int = DEFAULT_MAX_READ_BYTES
+    max_tree_entries: int = DEFAULT_MAX_TREE_ENTRIES
+    max_search_results: int = DEFAULT_MAX_SEARCH_RESULTS
+    max_process_output_bytes: int = DEFAULT_MAX_PROCESS_OUTPUT_BYTES
+    process_timeout_max: int = DEFAULT_PROCESS_TIMEOUT_MAX
     env: dict[str, str] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -100,7 +136,7 @@ class Config:
         if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ConfigError(f"Unsupported LOG_LEVEL {log_level!r}.")
 
-        return cls(
+        config = cls(
             mcp_host=source.get("MCP_HOST", "127.0.0.1").strip() or "127.0.0.1",
             mcp_port=mcp_port,
             public_mcp_host=source.get("PUBLIC_MCP_HOST", "").strip(),
@@ -123,11 +159,69 @@ class Config:
             opencode_pool_timeout=_parse_float_env(
                 source, "OPENCODE_POOL_TIMEOUT", 5.0
             ),
+            enable_opencode_agent=_parse_bool_env(
+                source, "ENABLE_OPENCODE_AGENT", False
+            ),
+            enable_commands=_parse_bool_env(
+                source, "AGENT_ENABLE_COMMANDS", False
+            ),
+            gateway_token=source.get("AGENT_GATEWAY_TOKEN", ""),
+            insecure_no_token_opt_out=_parse_bool_env(
+                source, "AGENT_INSECURE_NO_TOKEN_OPT_OUT", False
+            ),
+            max_read_bytes=_parse_int_env(
+                source, "AGENT_MAX_READ_BYTES", DEFAULT_MAX_READ_BYTES,
+                minimum=1,
+            ),
+            max_tree_entries=_parse_int_env(
+                source, "AGENT_MAX_TREE_ENTRIES", DEFAULT_MAX_TREE_ENTRIES,
+                minimum=1,
+            ),
+            max_search_results=_parse_int_env(
+                source, "AGENT_MAX_SEARCH_RESULTS", DEFAULT_MAX_SEARCH_RESULTS,
+                minimum=1,
+            ),
+            max_process_output_bytes=_parse_int_env(
+                source,
+                "AGENT_MAX_PROCESS_OUTPUT_BYTES",
+                DEFAULT_MAX_PROCESS_OUTPUT_BYTES,
+                minimum=1,
+            ),
+            process_timeout_max=_parse_int_env(
+                source, "AGENT_PROCESS_TIMEOUT_MAX", DEFAULT_PROCESS_TIMEOUT_MAX,
+                minimum=1,
+            ),
             env=source,
+        )
+        config.validate_public_exposure()
+        return config
+
+    def validate_public_exposure(self) -> None:
+        """Fail clearly when public exposure is configured without a token.
+
+        The gateway always registers mutating tools (file_write and
+        friends), so exposing it publicly with no bearer token is never
+        acceptable by default. AGENT_INSECURE_NO_TOKEN_OPT_OUT exists
+        only for explicitly documented local experimentation.
+        """
+        if not self.public_mcp_host:
+            return
+        if self.gateway_token:
+            return
+        if self.insecure_no_token_opt_out:
+            return
+        raise ConfigError(
+            "AGENT_GATEWAY_TOKEN is required when PUBLIC_MCP_HOST is set. "
+            "Public exposure without a bearer token is not allowed. For "
+            "localhost-only development, leave PUBLIC_MCP_HOST unset. If you "
+            "explicitly accept the risk, set AGENT_INSECURE_NO_TOKEN_OPT_OUT=true."
         )
 
     def auth_enabled(self) -> bool:
         return bool(self.opencode_password)
+
+    def token_auth_enabled(self) -> bool:
+        return bool(self.gateway_token)
 
     def summary(self) -> dict:
         """Non-secret summary used for logging/startup output."""
@@ -137,6 +231,9 @@ class Config:
             "public_mcp_host": self.public_mcp_host or "(none)",
             "opencode_url": self.opencode_url,
             "opencode_auth": self.auth_enabled(),
+            "opencode_agent_enabled": self.enable_opencode_agent,
+            "commands_enabled": self.enable_commands,
+            "token_auth": self.token_auth_enabled(),
             "allowed_roots": [str(p) for p in self.allowed_roots],
             "log_level": self.log_level,
         }

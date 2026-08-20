@@ -1,8 +1,8 @@
-"""Integration tests against the live local OpenCode backend.
+"""Integration tests against the live local OpenCode backend (OPTIONAL).
 
-Skipped automatically when OpenCode is not reachable at 127.0.0.1:4096.
-These tests exercise the real HTTP client against the real backend but do
-NOT touch the sample repository.
+Requires ENABLE_OPENCODE_AGENT=true and OpenCode reachable at
+127.0.0.1:4096. Skipped by default: the V2 direct-mode suite must not
+require OpenCode or any model.
 """
 
 from __future__ import annotations
@@ -14,9 +14,9 @@ import pytest
 from agent_gateway.config import Config
 from agent_gateway.errors import InvalidSessionError
 from agent_gateway.executors.opencode.executor import OpenCodeExecutor
-from conftest import needs_backend
+from conftest import needs_backend, needs_opencode_mode
 
-pytestmark = needs_backend
+pytestmark = [needs_backend, needs_opencode_mode]
 
 
 @pytest.fixture

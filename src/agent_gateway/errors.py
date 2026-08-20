@@ -17,7 +17,11 @@ class GatewayErrorCode(str, Enum):
     EXECUTOR_UNAVAILABLE = "executor_unavailable"
     UNAUTHORIZED_DIRECTORY = "unauthorized_directory"
     INVALID_SESSION = "invalid_session"
+    INVALID_WORKSPACE = "invalid_workspace"
     INVALID_REQUEST = "invalid_request"
+    HASH_CONFLICT = "hash_conflict"
+    COMMAND_DISABLED = "command_disabled"
+    PROCESS_ERROR = "process_error"
     TIMEOUT = "timeout"
     BACKEND_HTTP_ERROR = "backend_http_error"
     SESSION_BUSY = "session_busy"
@@ -66,8 +70,24 @@ class InvalidSessionError(GatewayError):
     code = GatewayErrorCode.INVALID_SESSION
 
 
+class InvalidWorkspaceError(GatewayError):
+    code = GatewayErrorCode.INVALID_WORKSPACE
+
+
 class InvalidRequestError(GatewayError):
     code = GatewayErrorCode.INVALID_REQUEST
+
+
+class HashConflictError(GatewayError):
+    code = GatewayErrorCode.HASH_CONFLICT
+
+
+class CommandDisabledError(GatewayError):
+    code = GatewayErrorCode.COMMAND_DISABLED
+
+
+class ProcessExecutionError(GatewayError):
+    code = GatewayErrorCode.PROCESS_ERROR
 
 
 class GatewayTimeoutError(GatewayError):

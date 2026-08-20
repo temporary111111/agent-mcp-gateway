@@ -176,6 +176,34 @@ async def test_messages_rendered(executor: OpenCodeExecutor) -> None:
     assert messages[0].parts[1]["tool"] == "bash"
 
 
+def _assistant_entry(finish: str | None) -> MessageEntry:
+    return MessageEntry(
+        info={"id": "msg_x", "role": "assistant", "finish": finish},
+        parts=[],
+    )
+
+
+async def test_is_completed_requires_stop_finish(
+    executor: OpenCodeExecutor,
+) -> None:
+    client = executor._client
+    client.status_map = {"ses_abc": SessionStatus(type="busy")}
+    assert await executor.is_completed("ses_abc") is False
+
+    client.status_map = {"ses_abc": SessionStatus(type="idle")}
+    client.messages_payload = [_assistant_entry("tool-calls"), _assistant_entry("stop")]
+    assert await executor.is_completed("ses_abc") is True
+
+    client.messages_payload = [_assistant_entry("tool-calls")]
+    assert await executor.is_completed("ses_abc") is False
+
+    client.messages_payload = [_assistant_entry("tool-calls"), _assistant_entry("stop")]
+    assert await executor.is_completed("ses_abc") is True
+
+    client.messages_payload = []
+    assert await executor.is_completed("ses_abc") is True
+
+
 async def test_diff_mapped(executor: OpenCodeExecutor) -> None:
     executor._client.diff_payload = [
         SnapshotFileDiff(
