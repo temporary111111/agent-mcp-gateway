@@ -1,359 +1,264 @@
-# Execution Report
+# Execution Report — V2 (Direct Mode as the Default Architecture)
+
+Commit: `10652e9577121dfd2283f5b009fcbabadafb816c` ("Agent Gateway v0.2.0:
+direct mode as the default architecture"). Previous release: v0.1.0
+(`0db35b7`).
 
 ## 1. Environment inspected
 
 - **Host**: Windows (win32), PowerShell 5.1.
-- **Python**: 3.14.7 (global and old-project venv); pip 26.2.1; git 2.55.0.
+- **Python**: 3.14.7; pip 26.2.1; git 2.55.0.
 - **MCP SDK**: `mcp` 2.0.0 (pinned `mcp>=2,<3`), `httpx` 0.28.1, `pydantic` 2.13.4.
-- **OpenCode**: CLI 1.18.18 installed via npm (`C:\Users\dev\AppData\Roaming\npm`).
-  Live server verified at `http://127.0.0.1:4096` returning
-  `{"healthy": true, "version": "1.18.18"}`.
-- **OpenCode OpenAPI** (478 KB) fetched from `http://127.0.0.1:4096/doc` and
-  inspected before any implementation. Verified: session IDs `^ses`, message IDs
-  `^msg`, permission IDs `^per`, prompt_async returns 204, permission replies
-  are `once | always | reject`, `/session/status` returns a map of
-  `{sessionID: {type: busy|idle|retry}}` (idle sessions disappear from the
-  map), `/permission` returns pending permission requests, `/session/{id}/diff`
-  returns `SnapshotFileDiff[]`.
-- **Live behavioral tests performed before implementation**: create session,
-  async prompt dispatch, status polling (observed `busy` then empty), message
-  retrieval, diff retrieval (empty for read-only task), permission listing.
+- **OpenCode**: CLI 1.18.18 (`C:\Users\dev\AppData\Roaming\npm`), headless
+  server verified at `http://127.0.0.1:4096` returning
+  `{"healthy": true, "version": "1.18.18"}`. Only required for the optional
+  OpenCode agent mode.
+- **Sample repository**: `C:\Users\dev\Desktop\sample-repo` (a git repo used
+  as the read-only fixture for delegated tasks).
 
-Note on workspace location: the prompt named `C:\Users\dev\Desktop\chatgpt-agent-gateway`;
-that path does not exist. The actual empty greenfield workspace created by the
-launcher is `C:\Users\dev\Desktop\chatgpt-like\chatgpt-agent-gateway`, which is
-where everything was built. The parent directory is an unrelated git repo, so
-the gateway was initialized as its own nested git repository.
+## 2. V2 objective and the corrective refactor
 
-## 2. Old prototype lessons discovered
+The V1 report documented a gateway whose only execution path was delegation to
+a local OpenCode agent. V2 corrects that direction: **direct mode is the
+default architecture**.
 
-Read-only inspection of `C:\Users\dev\Desktop\chatgpt-local-repo-mcp` revealed
-the following verified behaviors worth preserving:
+- **GPT-5.6 Sol (the ChatGPT client model) is the only reasoning agent.** The
+  gateway exposes deterministic filesystem, search, process, and git MCP tools
+  and executes exactly what the model calls. The gateway itself invokes **no
+  OpenCode server and no second LLM** in direct mode.
+- **OpenCode agent delegation is an optional, disabled-by-default mode**
+  (`ENABLE_OPENCODE_AGENT=true`) for whole-task autonomy.
+- **Transport auth**: optional bearer token (`AGENT_GATEWAY_TOKEN`) on every
+  `/mcp` request with constant-time comparison; public exposure without a
+  token requires an explicit `AGENT_INSECURE_NO_TOKEN_OPT_OUT=true`.
+- **Hardened session authorization** in OpenCode mode: every operation on an
+  existing session re-verifies that the session's real directory is still
+  inside `AGENT_ALLOWED_ROOTS` (fail closed, even after a gateway restart).
 
-1. **Cloudflare Host validation**: the prototype handled the public host by
-   building `TransportSecuritySettings(enable_dns_rebinding_protection=True,
-   allowed_hosts=[localhost..., PUBLIC_HOST...], allowed_origins=...)` and
-   passing it to `mcp.run(transport="streamable-http", stateless_http=True,
-   json_response=True, transport_security=...)`. This is the correct, proven
-   way to make a tunnel work without disabling security.
-2. `PUBLIC_MCP_HOST` normalization (strip scheme, keep netloc).
-3. MCP SDK 2.x decorator style (`@mcp.tool(title=..., annotations=...)`) and
-   raising `ValueError` from tools to return errors to the client.
-4. OpenCode health endpoint shape `{healthy, version}`.
-5. The prototype's direct repo tools (`repo_overview`, `repo_tree`, `read_file`,
-   `search_code`) were hard-coded to a single `REPO_ROOT`. Those are **not**
-   reproduced; see section 17.
-
-## 3. Architecture chosen
+## 3. Architecture chosen (V2)
 
 ```
-ChatGPT Web / GPT-5.6 Sol
+ChatGPT Web / GPT-5.6 Sol            <-- the reasoning agent
         |
-        | MCP over HTTPS (Streamable HTTP)
+        | MCP over HTTPS (Streamable HTTP, stateless + JSON responses)
         v
 Cloudflare Quick Tunnel
         |
         v
-Agent Gateway  http://127.0.0.1:8000/mcp
-        |   MCP tools (gateway / delegation / permissions / opencode-diagnostics)
+Agent Gateway  http://127.0.0.1:8000/mcp   [optional bearer auth]
+        |
+        |-- Direct mode (DEFAULT, no OpenCode / no model):
+        |      tools/direct.py -> workspaces/manager.py -> direct/ primitives
+        |      workspace_open, workspace_tree, file_read, file_stat,
+        |      file_find, code_search, file_write, file_replace,
+        |      file_apply_patch, process_run, git_status, git_diff,
+        |      git_log, git_show
+        |
+        +-- OpenCode agent mode (opt-in, ENABLE_OPENCODE_AGENT=true):
+               services/delegation.py -> executors/opencode/ -> 127.0.0.1:4096
+               gateway_health, agent_executors, agent_start_task,
+               agent_continue, agent_status, agent_session, agent_messages,
+               agent_diff, agent_abort, agent_pending_permissions,
+               agent_reply_permission, opencode_health, opencode_agents,
+               opencode_providers
+        |
         v
-services/delegation.py  (orchestration + in-memory session registry)
-        |
-        +-- Executor interface (executors/base.py)
-        |       |
-        |       +-- OpenCodeExecutor (executors/opencode/executor.py)
-        |               |
-        |               +-- OpenCodeClient (executors/opencode/client.py)  -> 127.0.0.1:4096
-        |
-        +-- (future) CodexExecutor / ClaudeCodeExecutor
+security/paths.py + security/auth.py   (allowed roots + bearer token)
         |
         v
-security/paths.py  (AGENT_ALLOWED_ROOTS enforcement, fail closed)
-        |
-        v
-Local filesystem / repositories
+Local filesystem / repositories / tools
 ```
 
-## 4. Why this architecture was chosen
+`build_server` registers the direct tools unconditionally; the OpenCode
+registry and tools are added only when `ENABLE_OPENCODE_AGENT=true` (28 tools
+registered in OpenCode mode, 16 in direct mode).
 
-- **Clean dependency direction**: tools → service → executor interface →
-  concrete executor → HTTP client. The MCP tools never touch `httpx`, so a new
-  backend only requires a new Executor implementation plus registry entry.
-- **Small, honest abstraction**: the Executor interface covers only operations
-  that exist for any delegated coding agent (health, sessions, prompts, status,
-  messages, diffs, abort, permissions). No fake Codex/Claude implementations
-  are shipped; extension points exist without pretending.
-- **Async-first**: `prompt_async` dispatches immediately and returns; no MCP
-  request is held open for long agent work, and no infinite polling loops exist
-  inside tools.
-- **Fail-closed security**: directory access requires explicit allowed roots;
-  no `C:\` or whole-profile defaults.
-- **Testability**: the client accepts an injected `httpx.AsyncClient`
-  (`MockTransport`), the executor accepts an injected client, and the service
-  accepts injected executors. Unit tests need no backend; integration/e2e tests
-  run against the real local OpenCode.
+## 4. Direct mode implementation
 
-## 5. Package/module structure
+- `tools/direct.py` — the 14 MCP tools. Each takes an opaque `ws_...` workspace
+  ID (from `workspace_open`) plus workspace-relative paths only; absolute
+  paths and `..` are rejected by argument validation.
+- `workspaces/manager.py` — `WorkspaceManager` binds directories inside
+  `AGENT_ALLOWED_ROOTS` to opaque IDs and re-validates containment and
+  symlink escapes on every call.
+- `direct/` — pure primitives: `filesystem` (read with size cap + offset,
+  stat, find), `search` (case-insensitive content search with line hits),
+  `process` (time-bounded execution with output cap), `git` (status/diff/log/
+  show), `hashing` (sha256 for patch verification).
+- `file_apply_patch` applies a unified diff with context verification and
+  returns the applied change plus an `expected_sha256` for client-side
+  confirmation; `file_write` is an exact-content write; `file_replace` is a
+  single-occurrence exact old→new replacement.
+- `process_run` is opt-in (`AGENT_ENABLE_COMMANDS=true`), runs in the
+  workspace directory, enforces `AGENT_PROCESS_TIMEOUT_MAX` (default 300 s),
+  and caps output at `AGENT_MAX_PROCESS_OUTPUT_BYTES`.
+- All I/O is capped: `AGENT_MAX_READ_BYTES`, `AGENT_MAX_TREE_ENTRIES`,
+  `AGENT_MAX_SEARCH_RESULTS`.
 
-```
-src/agent_gateway/
-├── __init__.py              version
-├── config.py                Config dataclass from env (validated)
-├── errors.py                GatewayError taxonomy (11 codes)
-├── logging.py               redacted logging
-├── server.py                MCP server assembly, transport security, entry point
-├── __main__.py              python -m agent_gateway
-├── security/paths.py        PathPolicy: allowed-roots enforcement
-├── executors/
-│   ├── base.py              Executor ABC + data objects
-│   ├── __init__.py          registry builder + require_executor
-│   └── opencode/
-│       ├── models.py        pydantic models for the OpenCode API
-│       ├── errors.py        httpx/pydantic -> GatewayError mapping
-│       ├── client.py        OpenCodeClient (HTTP, auth, timeouts)
-│       └── executor.py      OpenCodeExecutor (Executor impl)
-├── services/delegation.py   DelegationService + DelegatedSession registry
-└── tools/
-    ├── helpers.py           tool_handler wrapper (error -> ValueError)
-    ├── gateway.py           gateway_health, agent_executors
-    ├── delegation.py        agent_start_task/continue/status/session/messages/diff/abort
-    ├── permissions.py       agent_pending_permissions, agent_reply_permission
-    └── opencode.py          opencode_health, opencode_agents, opencode_providers
-tests/
-├── conftest.py              fixtures + skip markers
-├── unit/                    config, paths, client, executor, delegation, transport security
-├── integration/             live OpenCode backend tests
-└── e2e/                     service e2e + full MCP-over-HTTP protocol test
-```
+### Two MCP-SDK integration bugs found and fixed in `tools/direct.py`
 
-## 6. Executor abstraction
+1. **Eager annotation evaluation.** Tool functions are defined inside
+   `register_direct_tools(mcp, manager, config)`, and the MCP SDK's
+   `func_metadata` re-evaluates string annotations with
+   `inspect.signature(func, eval_str=True)` against **module** globals. With
+   `from __future__ import annotations`, the `Field(le=config.max_read_bytes)`
+   annotations failed at server startup with `NameError: name 'config' is not
+   defined`. Fixed by removing the future import so annotations evaluate
+   eagerly in the closure scope (documented in the module docstring).
+2. **Closure body name shadowing.** Inside the local tool defs, calling the
+   module-level functions by their plain names (e.g. `file_apply_patch(...)`)
+   resolved to the **local** async def, returning unawaited coroutine objects
+   (a lazy infinite recursion that surfaced as wrong tool results). Fixed by
+   importing `from .. import direct as _direct` and prefixing all call sites;
+   the previous `direct_file_read`/`direct_git_diff` aliases were removed.
 
-`Executor` (ABC) in `executors/base.py`:
+## 5. Transport authentication
 
-- `health()` -> ExecutorHealth
-- `create_session(directory, title, agent)` -> SessionInfo
-- `send_prompt(session_id, task, agent, directory)` -> None (async dispatch)
-- `status(session_id)` -> SessionStatusInfo (`busy | idle | retry`)
-- `session_info(session_id)` -> SessionInfo
-- `messages(session_id, limit, before)` -> list[MessageInfo]
-- `diff(session_id, message_id)` -> list[FileDiff]
-- `abort(session_id)` -> bool
-- `pending_permissions()` -> list[PermissionRequestInfo]
-- `reply_permission(request_id, reply, message)` -> bool
-- `capabilities()` -> set[str] (extra backend-specific tools)
+- `security/auth.py`: Starlette `BaseHTTPMiddleware` wrapping
+  `mcp.streamable_http_app(...)`; every request must carry
+  `Authorization: Bearer <token>` when `AGENT_GATEWAY_TOKEN` is set.
+  Comparison is constant-time (`secrets.compare_digest`); failures return 401
+  with a generic body.
+- Startup policy: setting `PUBLIC_MCP_HOST` without a token fails startup
+  unless `AGENT_INSECURE_NO_TOKEN_OPT_OUT=true` (documented in config and
+  README).
+- The MCP SDK 2.0.0 client has no auth hook, so the e2e tests pass the token
+  via a prebuilt `httpx2.AsyncClient(headers={"Authorization": ...})` passed
+  as `http_client=` to `streamable_http_client`.
 
-## 7. OpenCode implementation
+## 6. OpenCode agent mode (optional)
 
-- `OpenCodeClient` centralizes base URL, optional HTTP Basic Auth (only when a
-  password is configured), separate connect/read/write/pool timeouts, typed
-  models, and maps transport/status/validation failures into gateway errors.
-- Uses the verified live endpoints: `GET /global/health`, `POST /session`,
-  `POST /session/{id}/prompt_async` (204), `GET /session/status`,
-  `GET /session/{id}`, `GET /session/{id}/message`, `GET /session/{id}/diff`,
-  `POST /session/{id}/abort`, `GET /permission`,
-  `POST /permission/{id}/reply`, `GET /agent`, `GET /provider`.
-- Session IDs are validated (`^ses`) before any backend call; message IDs
-  (`^msg`) and permission IDs (`^per`) are validated where provided.
-- A 400 from `prompt_async` is mapped to `session_busy` when the status map says
-  the session is busy, otherwise to a generic backend error.
-- Permission replies are restricted to `once | always | reject`.
-- Diagnostics (`agents`, `providers`) strip hidden agents and never include
-  provider secrets.
+- `DelegationService(executors, path_policy, *, opencode_enabled=False,
+  commands_enabled=False)`; the registry is in-memory and the service is
+  process-global (built once in `build_server`).
+- **Authorization hardening**: `_authorize_session` resolves the session's
+  real directory (registry, else backend `session_info` after a restart) and
+  re-checks containment in `AGENT_ALLOWED_ROOTS` on every operation; anything
+  unverifiable is denied (fail closed). Permission requests for unverifiable
+  sessions are dropped, never surfaced, never approvable.
+- **Completion heuristic fixed**: `is_completed` requires the session idle
+  **and** the last assistant message's `finish == "stop"`. The previous
+  implementation inspected `assistant[0]` (oldest-first message order) and
+  treated idle alone as done — it never completed because the oldest assistant
+  message finishes with `finish="tool-calls"` while the model is mid-work.
+  Unit test `test_is_completed_requires_stop_finish` added.
+- **Diff semantics confirmed against the live backend (v1.18.18)**: diffs are
+  keyed by the origin user message id (`messageID`); a session-wide diff (no
+  messageID) and assistant-message diffs both return `[]`. `DelegationService.diff`
+  therefore defaults to the remembered `origin_message_id`; the temporary
+  `find_diff_message_id` (newest assistant message) was removed from
+  `executors/base.py` and `executors/opencode/executor.py`.
+- `prompt_async` payload is `{"parts": [{"type": "text", "text": task}]}`
+  (the client was already correct).
 
-## 8. MCP tool interface
+## 7. Configuration model (V2 additions)
 
-| Tool | Description | Read-only | Backend operation |
-| --- | --- | --- | --- |
-| `gateway_health` | Gateway + executor reachability | yes | health checks |
-| `agent_executors` | List executors + capabilities | yes | registry |
-| `agent_start_task` | Create session in allowed dir + async dispatch | no | POST /session + prompt_async |
-| `agent_continue` | Async follow-up on existing session | no | prompt_async |
-| `agent_status` | busy/idle/retry + pending permissions | yes | /session/status, /session/{id}, /permission |
-| `agent_session` | Session metadata + summary | yes | /session/{id} |
-| `agent_messages` | Message history with text/tool parts | yes | /session/{id}/message |
-| `agent_diff` | Per-file diffs | yes | /session/{id}/diff |
-| `agent_abort` | Abort busy session | no | /session/{id}/abort |
-| `agent_pending_permissions` | Pending permission requests | yes | /permission |
-| `agent_reply_permission` | Reply once/always/reject | no | /permission/{id}/reply |
-| `opencode_health` | OpenCode health/version/url detail | yes | /global/health |
-| `opencode_agents` | OpenCode agent list | yes | /agent |
-| `opencode_providers` | Model providers (no secrets) | yes | /provider |
+New variables: `AGENT_GATEWAY_TOKEN`, `AGENT_INSECURE_NO_TOKEN_OPT_OUT`,
+`ENABLE_OPENCODE_AGENT`, `AGENT_ENABLE_COMMANDS`, `AGENT_MAX_READ_BYTES`,
+`AGENT_MAX_TREE_ENTRIES`, `AGENT_MAX_SEARCH_RESULTS`,
+`AGENT_MAX_PROCESS_OUTPUT_BYTES`, `AGENT_PROCESS_TIMEOUT_MAX`.
+`AGENT_GATEWAY_TOKEN` is in `SENSITIVE_ENV_KEYS` (never logged; `Config.summary`
+masks it). Version bumped to 0.2.0; pyproject adds `uvicorn>=0.27` and an
+`opencode` pytest marker.
 
-Design decisions:
+## 8. Testing
 
-- `executor` is an explicit parameter on generic tools with a default of
-  `opencode`. Explicit-with-default keeps the interface future-proof without
-  burdening the caller today.
-- Session ID is the only handle needed for follow-ups: OpenCode resolves the
-  directory itself server-side (verified live), so the in-memory session
-  registry is a convenience for audit/logging, not a correctness requirement.
+- **Unit** (`tests/unit`): config + direct-config limits, path policy
+  (traversal/symlink/prefix-sibling/root/fail-closed), auth middleware (401
+  paths, constant-time, public-exposure gate), workspaces manager, filesystem,
+  search, process, git tools, delegation service, OpenCode client/executor
+  (incl. the completion-heuristic test).
+- **Integration** (`tests/integration`): live OpenCode lifecycle tests gated
+  on `needs_opencode_mode` (`ENABLE_OPENCODE_AGENT=true`), plus
+  `test_opencode_write_task.py` (write task on a copy of the sample repo,
+  origin-message diff shows the added file once the snapshot settles; diff
+  retried 10×1 s).
+- **E2E** (`tests/e2e`):
+  - `test_direct_e2e.py` — **direct mode with NO OpenCode and NO model**:
+    real gateway subprocess, 401 without token, tool list (direct tools
+    present, OpenCode-only tools absent), `gateway_health` direct mode,
+    workspace_open → file_read → file_apply_patch (expected_sha256) →
+    file_write → process_run → git_diff/git_status, unauthorized-directory
+    rejection. Server env pops `ENABLE_OPENCODE_AGENT`.
+  - `test_opencode_e2e.py` — read-only delegated task (repository verified
+    byte-for-byte unmodified: content, size, mtime) plus a full MCP protocol
+    flow over raw JSON-RPC POSTs (the exact wire contract of a stateless
+    json_response server): initialize → tools/list → gateway_health →
+    agent_start_task → agent_status poll to completed → agent_messages
+    (contains `FINISHED`) → agent_diff → error cases (bogus session,
+    unauthorized directory).
+  - `tests/e2e/test_gateway_e2e.py` (V1) deleted; `tests/conftest.py` rewritten
+    with `needs_backend` (5 s health timeout), `needs_repo`,
+    `needs_opencode_mode`.
 
-## 9. Security model
+### Test results
 
-- **Directory security**: `AGENT_ALLOWED_ROOTS` is a semicolon-separated list of
-  absolute paths. If unset, all task directories are rejected (fail closed).
-  Each candidate is canonicalized (`resolve`), must exist, must not be a
-  filesystem root, and must be inside an allowed root. Traversal, symlink
-  escapes, and sibling-prefix spoofing (`sample` vs `sample-evil`) are
-  rejected; comparisons are case-insensitive on Windows.
-- **No unrestricted shell**: the gateway exposes no generic `shell(command)`
-  tool. Low-level system interaction happens inside the delegated agent, which
-  is subject to OpenCode's own permission system.
-- **Permissions never auto-approved**: pending requests are surfaced through
-  `agent_status` / `agent_pending_permissions`; a human decides via
-  `agent_reply_permission`.
-- **Network**: OpenCode stays localhost-only. Only the gateway `/mcp` endpoint
-  is meant to be tunneled. `PUBLIC_MCP_HOST` allow-lists the tunnel host while
-  keeping DNS-rebinding protection enabled.
-- **Secrets**: passwords and Authorization headers are never logged; the
-  config summary masks the password; provider model lists exclude keys.
-
-## 10. Configuration model
-
-`config.py` provides a frozen `Config` dataclass loaded from environment
-variables (with optional `.env` loading via python-dotenv): `MCP_HOST`,
-`MCP_PORT`, `PUBLIC_MCP_HOST`, `OPENCODE_URL`, `OPENCODE_USERNAME`,
-`OPENCODE_PASSWORD`, `AGENT_ALLOWED_ROOTS`, `LOG_LEVEL`, and four OpenCode
-timeouts. Values are validated at startup (`ConfigError` on invalid port, URL,
-log level, or timeout). `.env.example` documents every variable with no real
-secrets.
-
-## 11. Error handling
-
-`errors.py` defines `GatewayError` with an enum `GatewayErrorCode`:
-`config_error`, `executor_unavailable`, `unauthorized_directory`,
-`invalid_session`, `invalid_request`, `timeout`, `backend_http_error`,
-`session_busy`, `malformed_response`, `permission_error`, `internal`.
-
-`executors/opencode/errors.py` maps httpx transport failures (connect,
-timeout), HTTP status errors (401/403 -> permission, 404 -> invalid session,
-others -> backend_http_error with truncated body snippet), and pydantic
-validation failures into gateway errors. `tools/helpers.py` converts any
-`GatewayError` into a short `ValueError` (surfaced by the MCP SDK to the
-client) and logs unexpected exceptions without leaking tracebacks to callers.
-
-## 12. Tests
-
-- **Unit** (`tests/unit`, 60 tests, mocked `httpx.MockTransport` / fake executors):
-  configuration parsing and validation; allowed-roots validation, traversal and
-  prefix-sibling rejection, drive-root rejection, fail-closed default;
-  OpenCode client HTTP behavior (health, 500, 404, 401, timeout, malformed
-  payload, Basic Auth header presence/absence, 204 dispatch, session creation,
-  permission reply); executor validation and rendering (status busy/idle,
-  message parts, diffs, permission reply enum, busy mapping on prompt failure);
-  delegation service (unknown executor, unauthorized directory, happy path,
-  remembered directory on continue, pending permissions in status, permission
-  reply validation, messages/diff, gateway health, executor listing); transport
-  security (`PUBLIC_MCP_HOST` normalization and allow-listing, DNS-rebinding
-  protection never disabled).
-- **Integration** (`tests/integration`, 5 tests, real OpenCode): health, full
-  session lifecycle (create → async prompt → poll to idle → messages contain
-  the expected answer → diff → session info → abort), invalid-session rejection,
-  pending permissions, agents/providers. Auto-skipped when the backend is down.
-- **E2E** (`tests/e2e`, 2 tests): (a) a read-only delegated task on the sample
-  repo via the DelegationService, verifying byte-for-byte (content, size,
-  mtime) that the repository is not modified; (b) a full-stack test that starts
-  the gateway as a real Streamable HTTP process on a temporary port, connects
-  with the MCP client library, lists tools, runs `gateway_health`,
-  `agent_start_task`, polls `agent_status` to idle, reads `agent_messages`
-  (contains `FINISHED`), requests `agent_diff`, and verifies error behavior for
-  a bogus session and an unauthorized directory.
-
-## 13. Exact test outputs
-
-Full output captured in `TEST_RESULTS.txt`. Summary:
+Default suite (no OpenCode enabled — direct mode only):
 
 ```
-67 passed in 9.55s
+150 passed, 9 skipped in 30.01s
 ```
 
-- `tests/unit`: 60 passed
-- `tests/integration`: 5 passed (OpenCode live)
-- `tests/e2e`: 2 passed (read-only repo task + full MCP-over-HTTP protocol)
+(the 8 skipped are OpenCode-gated, 1 is the symlink-escape test that requires
+Windows symlink privileges this machine lacks; a directory-junction fallback
+was added but still skips in this environment).
 
-## 14. Real OpenCode E2E result
+Full suite with `ENABLE_OPENCODE_AGENT=true` (live backend):
 
-The e2e test ran a delegated read-only task on
-`C:\Users\dev\Desktop\sample-repo` ("Inspect the repository and summarize its
-structure. Do not modify any files."):
+```
+158 passed, 1 skipped in 76.78s
+```
 
-- gateway created a session (`ses_...`) via `POST /session`,
-- dispatched the task asynchronously via `prompt_async` (HTTP 204) and returned
-  the session ID immediately,
-- `agent_status` observed `busy` and then `idle`,
-- `agent_messages` returned the agent's text summary (mentions `app.py` /
-  README content),
-- `agent_diff` returned an empty change list,
-- a byte-for-byte snapshot of the repository before/after (content, size,
-  mtime) confirmed **no file modification** occurred.
+Full output in `TEST_RESULTS.txt` (default suite).
 
-The full MCP-over-HTTP protocol test additionally verified the complete public
-tool surface through the MCP client library, including correct error responses
-for an invalid session and a directory outside the allowed roots.
+## 9. Debugging story: the OpenCode e2e "hang"
 
-Note: after the machine shutdown, the local OpenCode server had to be restarted.
-The environment's `OPENCODE_SERVER_PASSWORD` (set by the OpenCode desktop app)
-was inherited and caused a 401; the headless server was restarted with that
-variable cleared, reproducing the previously verified no-auth setup.
+`test_full_mcp_server_protocol` intermittently hung mid-poll. Instrumentation
+(narrowed to raw JSON-RPC POSTs with per-call timing) showed the gateway's own
+backend request started but never finished, the gateway's 60 s read timeout
+never fired, and faulthandler produced no dump. In-process uvicorn never
+reproduced it; a subprocess with `stdout=DEVNULL` also never reproduced it.
+**Root cause: the test never drained the gateway child's stdout/stderr pipes.
+The Windows pipe buffer (~4 KiB) filled with the uvicorn banner, httpx INFO
+request logs, and SDK session-manager notes, and the child's next `write`
+blocked its event loop.** Fixed by draining both pipes from reader threads in
+both e2e tests (and driving the OpenCode e2e with raw JSON-RPC POSTs instead
+of the SDK client's SSE stream, which idles silently for minutes during a
+delegated task). The gateway itself was verified correct: a genuinely stalled
+backend still produces an error response within the configured 60 s read
+timeout.
 
-## 15. Known limitations
+## 10. Known limitations
 
-- The in-memory session registry is lost on gateway restart (OpenCode still
-  resolves sessions by ID, so follow-ups keep working).
-- Messages and diffs are returned as plain structured dicts; there is no
-  schema-constrained result object yet.
-- The OpenCode client targets the v1 OpenAPI paths; a future backend version
-  should be re-verified against its own `/doc`.
+- The OpenCode session registry is in-memory (OpenCode itself persists
+  sessions by ID; post-restart operations are re-authorized from backend
+  metadata).
+- Direct-mode workspace IDs expire on gateway restart; reopen with
+  `workspace_open`.
+- `file_apply_patch` requires exact context matches; no fuzzy application.
+- OpenCode API is consumed as a superset of the v1 OpenAPI paths; a future
+  backend version should be re-verified against its own `/doc`.
 - The `always` permission reply is supported at the protocol level; operators
-  may want to disable it globally to enforce per-run approvals.
-- No rate limiting or access token on the gateway itself (the tunnel operator
-  is responsible for that layer).
+  may want to disable it globally.
 
-## 16. Scalability considerations
+## 11. Files changed (V2, vs `0db35b7`)
 
-Future Codex / Claude Code adapters:
+New: `src/agent_gateway/direct/*` (5 modules), `src/agent_gateway/workspaces/*`
+(2), `src/agent_gateway/security/auth.py`, `src/agent_gateway/tools/direct.py`,
+`tests/unit/test_{auth,direct_config,filesystem,git_tools,process,search,workspaces}.py`,
+`tests/e2e/test_{direct,opencode}_e2e.py`,
+`tests/integration/test_opencode_write_task.py`.
+Modified: `config.py`, `server.py`, `services/delegation.py`,
+`executors/{base,opencode/executor}.py`, `security/paths.py`, `logging.py`,
+`errors.py`, `pyproject.toml`, `.env.example`, `README.md`, `tests/conftest.py`,
+`tests/integration/test_opencode_live.py`, several unit tests.
+Deleted: `tests/e2e/test_gateway_e2e.py`.
 
-- Implement `Executor` from `executors/base.py`; the generic `agent_*` tools
-  and `DelegationService` need zero changes.
-- Register the adapter in `executors/__init__.py` (`build_executors`); it then
-  appears in `agent_executors` and `gateway_health` automatically.
-- Backend-specific capabilities (`agents`, `providers` today) plug into the
-  `capabilities()` set and live in their own `tools/<backend>.py` module.
-- A per-executor `send_prompt` adapter maps the backend's own async/streaming
-  semantics onto the gateway's immediate-return contract. For backends without
-  a native async prompt, the adapter can spawn a worker task and expose
-  progress through `status`.
-- The registry can later be driven by configuration so operators enable a
-  subset of executors per deployment.
-- Session registry can be moved to a persistent store (SQLite) without touching
-  the tool layer if cross-restart session memory is required.
+## 12. Verification of the V2 core claim
 
-## 17. Things intentionally NOT implemented
-
-- The prototype's direct repo tools (`repo_overview`, `repo_tree`, `read_file`,
-  `search_code`) were **not** reproduced. Decision: repository inspection
-  belongs to the delegated agent (OpenCode has better context, file watching,
-  and tooling), not to the gateway. Keeping them would duplicate agent
-  capability and require an extra allowlist/ignore-list system for zero benefit
-  in V1. If a fast, read-only, agent-independent repo viewer is wanted later,
-  it belongs in a separate capability module with its own strict rules.
-- No generic `shell(command)` tool.
-- No permission auto-approval anywhere.
-- No Codex / Claude Code adapters or stubs.
-- No persistence layer beyond OpenCode's own session storage.
-- No auth token / rate limiting on the gateway transport itself.
-
-## 18. Recommended next development phase
-
-1. Add a persistent (SQLite) session registry so the gateway can report task
-   directories across restarts.
-2. Introduce an optional gateway access token + per-session rate limits for
-   safer Cloudflare exposure.
-3. Implement a second executor (e.g. Codex) to validate the extension seam and
-   refine the `capabilities()` model.
-4. Add structured output schemas for `agent_messages` / `agent_diff` and an
-   optional change-summary summarizer.
-5. Add a `agent_wait` convenience tool with a bounded deadline so supervisors
-   can block on completion without polling loops in their own logic.
-6. Add an OpenCode-side permission policy mapping (e.g. blocklist of dangerous
-   commands) surfaced through `agent_pending_permissions` metadata.
+Direct mode was exercised end-to-end with **no OpenCode server reachable and
+no model involved**: `tests/e2e/test_direct_e2e.py` spawns the gateway without
+`ENABLE_OPENCODE_AGENT`, confirms the OpenCode-only tools are absent, and
+completes the full workspace → read → patch → write → process → git loop
+against the real MCP-over-HTTP endpoint. The delegated-agent suite runs only
+when explicitly enabled.
