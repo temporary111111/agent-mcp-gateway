@@ -24,6 +24,10 @@ from ..logging import get_logger
 from ..workspaces.manager import WorkspaceManager
 from .helpers import tool_handler
 
+# Import new modules
+from ..direct.memory import memory_save, memory_recall, memory_search, memory_delete, memory_list
+from ..direct.mode import set_mode, get_mode, is_plan_mode
+
 logger = get_logger("tools.direct")
 
 READ_ONLY = ToolAnnotations(
@@ -88,8 +92,27 @@ def register_direct_tools(
     ) -> dict:
         """Validate `directory` and bind it to an opaque workspace ID. All
         other direct tools take this ID plus workspace-relative paths.
-        Handles expire on gateway restart; reopen with workspace_open."""
-        return manager.open(directory)
+        Handles expire on gateway restart; reopen with workspace_open.
+        Automatically loads AGENTS.md from the workspace root."""
+        from ..direct.agents_md import load_agents_md
+        from pathlib import Path
+
+        result = manager.open(directory)
+
+        # Load AGENTS.md if workspace opened successfully
+        if "workspace_id" in result:
+            from ..direct.memory import init_memory
+            init_memory(result["workspace_id"])
+
+            try:
+                workspace_path = Path(directory)
+                agents_md = load_agents_md(workspace_path)
+                if agents_md["found"]:
+                    result["agents_md"] = agents_md
+            except Exception:
+                pass  # Don't fail workspace open if AGENTS.md loading fails
+
+        return result
 
     @mcp.tool(
         title="Workspace directory tree",
@@ -650,3 +673,121 @@ def register_direct_tools(
         """Open a web page and return its content, links, and forms.
         Useful for browsing documentation or web interfaces."""
         return _direct.browser_open(url)
+
+    # --- Plan/Build mode tools (no workspace required) ---
+
+    @mcp.tool(
+        title="Switch plan/build mode",
+        annotations=READ_ONLY,
+    )
+    @tool_handler
+    async def plan_mode(
+        workspace_id: WORKSPACE_ID = ...,
+        mode: Annotated[
+            str,
+            Field(
+                description=(
+                    "Mode to switch to: 'plan' (read-only analysis, no "
+                    "writes/execute) or 'build' (full access)."
+                ),
+            ),
+        ] = "plan",
+    ) -> dict:
+        """Switch between plan and build modes.
+
+        Plan mode: You can explore code, search, and plan, but cannot
+        write files or run commands. Use this to analyze before acting.
+
+        Build mode: Full access to read, write, edit, and run commands.
+        This is the default mode.
+        """
+        return set_mode(workspace_id, mode)
+
+    # --- Memory tools (no workspace required, but workspace_id ties memory) ---
+
+    @mcp.tool(
+        title="Save memory",
+        annotations=MUTATING,
+    )
+    @tool_handler
+    async def memory_save(
+        workspace_id: WORKSPACE_ID = ...,
+        key: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Unique key for this memory (e.g. 'project_architecture', 'build_command').",
+            ),
+        ] = ...,
+        value: Annotated[
+            str,
+            Field(
+                description="Content to remember (text, instructions, findings, etc).",
+            ),
+        ] = ...,
+        tags: Annotated[
+            list[str],
+            Field(
+                description="Optional tags for categorization (e.g. ['architecture', 'python']).",
+            ),
+        ] = [],
+    ) -> dict:
+        """Save a memory entry that persists across restarts. Use this to
+        remember project architecture, build commands, coding patterns,
+        or any findings you want to recall later."""
+        return memory_save(key, value, tags)
+
+    @mcp.tool(
+        title="Recall memory",
+        annotations=READ_ONLY,
+    )
+    @tool_handler
+    async def memory_recall(
+        key: Annotated[
+            str,
+            Field(description="Key of the memory to recall."),
+        ] = ...,
+    ) -> dict:
+        """Recall a specific memory entry by key."""
+        return memory_recall(key)
+
+    @mcp.tool(
+        title="Search memory",
+        annotations=READ_ONLY,
+    )
+    @tool_handler
+    async def memory_search(
+        query: Annotated[
+            str,
+            Field(min_length=1, description="Search query."),
+        ] = ...,
+        tags: Annotated[
+            list[str],
+            Field(description="Optional tag filter."),
+        ] = [],
+    ) -> dict:
+        """Search memory entries by text query and optional tags."""
+        return memory_search(query, tags)
+
+    @mcp.tool(
+        title="Delete memory",
+        annotations=MUTATING,
+    )
+    @tool_handler
+    async def memory_delete(
+        key: Annotated[
+            str,
+            Field(description="Key of the memory to delete."),
+        ] = ...,
+    ) -> dict:
+        """Delete a memory entry by key."""
+        return memory_delete(key)
+
+    @mcp.tool(
+        title="List all memories",
+        annotations=READ_ONLY,
+    )
+    @tool_handler
+    async def memory_list() -> dict:
+        """List all saved memory entries, sorted by most recent."""
+        return memory_list()
