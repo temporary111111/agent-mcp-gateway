@@ -25,7 +25,6 @@ from ..workspaces.manager import WorkspaceManager
 from .helpers import tool_handler
 
 # Import new modules
-from ..direct.memory import memory_save, memory_recall, memory_search, memory_delete, memory_list
 from ..direct.mode import set_mode, get_mode, is_plan_mode
 
 logger = get_logger("tools.direct")
@@ -101,9 +100,6 @@ def register_direct_tools(
 
         # Load AGENTS.md if workspace opened successfully
         if "workspace_id" in result:
-            from ..direct.memory import init_memory
-            init_memory(result["workspace_id"])
-
             try:
                 workspace_path = Path(directory)
                 agents_md = load_agents_md(workspace_path)
@@ -702,92 +698,3 @@ def register_direct_tools(
         This is the default mode.
         """
         return set_mode(workspace_id, mode)
-
-    # --- Memory tools (no workspace required, but workspace_id ties memory) ---
-
-    @mcp.tool(
-        title="Save memory",
-        annotations=MUTATING,
-    )
-    @tool_handler
-    async def memory_save(
-        workspace_id: WORKSPACE_ID = ...,
-        key: Annotated[
-            str,
-            Field(
-                min_length=1,
-                description="Unique key for this memory (e.g. 'project_architecture', 'build_command').",
-            ),
-        ] = ...,
-        value: Annotated[
-            str,
-            Field(
-                description="Content to remember (text, instructions, findings, etc).",
-            ),
-        ] = ...,
-        tags: Annotated[
-            list[str],
-            Field(
-                description="Optional tags for categorization (e.g. ['architecture', 'python']).",
-            ),
-        ] = [],
-    ) -> dict:
-        """Save a memory entry that persists across restarts. Use this to
-        remember project architecture, build commands, coding patterns,
-        or any findings you want to recall later."""
-        return memory_save(key, value, tags)
-
-    @mcp.tool(
-        title="Recall memory",
-        annotations=READ_ONLY,
-    )
-    @tool_handler
-    async def memory_recall(
-        key: Annotated[
-            str,
-            Field(description="Key of the memory to recall."),
-        ] = ...,
-    ) -> dict:
-        """Recall a specific memory entry by key."""
-        return memory_recall(key)
-
-    @mcp.tool(
-        title="Search memory",
-        annotations=READ_ONLY,
-    )
-    @tool_handler
-    async def memory_search(
-        query: Annotated[
-            str,
-            Field(min_length=1, description="Search query."),
-        ] = ...,
-        tags: Annotated[
-            list[str],
-            Field(description="Optional tag filter."),
-        ] = [],
-    ) -> dict:
-        """Search memory entries by text query and optional tags."""
-        return memory_search(query, tags)
-
-    @mcp.tool(
-        title="Delete memory",
-        annotations=MUTATING,
-    )
-    @tool_handler
-    async def memory_delete(
-        key: Annotated[
-            str,
-            Field(description="Key of the memory to delete."),
-        ] = ...,
-    ) -> dict:
-        """Delete a memory entry by key."""
-        return memory_delete(key)
-
-    @mcp.tool(
-        title="List all memories",
-        annotations=READ_ONLY,
-    )
-    @tool_handler
-    async def memory_list() -> dict:
-        """List all saved memory entries, sorted by most recent."""
-        return memory_list()

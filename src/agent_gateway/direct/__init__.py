@@ -16,7 +16,6 @@ from .filesystem import (
 from .git import git_diff, git_log, git_show, git_status
 from .hashing import sha256_file
 from .lsp import lsp_info, lsp_references
-from .memory import memory_delete, memory_list, memory_recall, memory_save, memory_search
 from .mode import get_mode, is_plan_mode, set_mode
 from .process import process_run
 from .search import code_search
@@ -41,11 +40,6 @@ __all__ = [
     "load_agents_md",
     "lsp_info",
     "lsp_references",
-    "memory_delete",
-    "memory_list",
-    "memory_recall",
-    "memory_save",
-    "memory_search",
     "process_run",
     "set_mode",
     "sha256_file",
