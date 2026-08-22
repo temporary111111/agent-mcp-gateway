@@ -94,6 +94,7 @@ def process_run(
     *,
     cwd_relative: str = ".",
     timeout_seconds: int = 30,
+    background: bool = False,
 ) -> dict:
     if not config.enable_commands:
         raise CommandDisabledError(
@@ -121,6 +122,49 @@ def process_run(
             "cwd_relative must point to a directory inside the workspace."
         )
 
+    # Background mode: detach the process and return immediately
+    if background:
+        try:
+            if sys.platform == "win32":
+                process = subprocess.Popen(
+                    [command, *args],
+                    cwd=str(cwd),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    creationflags=(
+                        _CREATE_NO_WINDOW
+                        | subprocess.CREATE_NEW_PROCESS_GROUP
+                    ),
+                )
+            else:
+                process = subprocess.Popen(
+                    [command, *args],
+                    cwd=str(cwd),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+        except OSError as exc:
+            raise ProcessExecutionError(
+                f"Failed to start background process: {exc}",
+                detail={"executable": executable, "args": args},
+            ) from exc
+
+        return {
+            "workspace_id": workspace_id,
+            "command": [executable, *args],
+            "cwd": str(cwd),
+            "pid": process.pid,
+            "background": True,
+            "message": (
+                f"Process started in background (PID {process.pid}). "
+                f"It will continue running after this call returns."
+            ),
+        }
+
+    # Foreground mode: capture output and wait for completion
     capture_out = _OutputCapture(config.max_process_output_bytes)
     capture_err = _OutputCapture(config.max_process_output_bytes)
 

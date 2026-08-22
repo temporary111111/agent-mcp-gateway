@@ -406,10 +406,21 @@ def register_direct_tools(
                     description="Hard deadline; the process tree is killed.",
                 ),
             ] = 30,
+            background: Annotated[
+                bool,
+                Field(
+                    description=(
+                        "If true, start the process in the background and "
+                        "return immediately with the PID. Use for long-running "
+                        "processes like web servers. The process continues "
+                        "after this call returns."
+                    ),
+                ),
+            ] = False,
         ) -> dict:
             """Launch a process inside the workspace with argument-array
-            semantics, hard timeout, and output caps. A launched process
-            runs with the gateway user's OS privileges."""
+            semantics. Set background=true for long-running processes
+            (e.g. web servers) to detach and return immediately."""
             return _direct.process_run(
                 config,
                 manager,
@@ -418,6 +429,7 @@ def register_direct_tools(
                 args,
                 cwd_relative=cwd_relative,
                 timeout_seconds=timeout_seconds,
+                background=background,
             )
 
     @mcp.tool(
