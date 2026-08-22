@@ -23,7 +23,7 @@ dev = [
 ]
 
 [project.scripts]
-agent-gateway = "agent_gateway.server:main"
+agent-gateway = "agent_gateway.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
