@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
 from .errors import ConfigError
 
@@ -17,6 +18,9 @@ DEFAULT_MAX_TREE_ENTRIES = 1_000
 DEFAULT_MAX_SEARCH_RESULTS = 200
 DEFAULT_MAX_PROCESS_OUTPUT_BYTES = 100_000
 DEFAULT_PROCESS_TIMEOUT_MAX = 300
+
+CONFIG_DIR = Path.home() / ".agent-gateway"
+CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
 def _parse_float_env(
@@ -133,12 +137,71 @@ class Config:
     enable_commands: bool = False
     gateway_token: str = ""
     insecure_no_token_opt_out: bool = False
+    public_exposure: bool = False
     max_read_bytes: int = DEFAULT_MAX_READ_BYTES
     max_tree_entries: int = DEFAULT_MAX_TREE_ENTRIES
     max_search_results: int = DEFAULT_MAX_SEARCH_RESULTS
     max_process_output_bytes: int = DEFAULT_MAX_PROCESS_OUTPUT_BYTES
     process_timeout_max: int = DEFAULT_PROCESS_TIMEOUT_MAX
     env: dict[str, str] = field(default_factory=dict, repr=False)
+
+    @classmethod
+    def from_file(cls, path: Path | None = None) -> dict[str, Any]:
+        """Load config values from a JSON file. Returns a dict of values
+        found in the file (empty dict if file doesn't exist or is invalid).
+        """
+        path = path or CONFIG_FILE
+        if not path.is_file():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise ConfigError(
+                f"Failed to read config file {path}: {exc}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise ConfigError(
+                f"Config file {path} must contain a JSON object."
+            )
+        return data
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        folder: str | None = None,
+        commands: bool | None = None,
+        public: bool | None = None,
+        port: int | None = None,
+        config_file: Path | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> "Config":
+        """Build config with priority: CLI args > config file > env vars > defaults.
+
+        CLI args (folder, commands, public, port) override config file values,
+        which override environment variables, which override defaults.
+        """
+        # Layer 1: env vars (backwards compat with .env)
+        source = dict(os.environ if env is None else env)
+
+        # Layer 2: config file
+        file_values = cls.from_file(config_file)
+        for key, value in file_values.items():
+            env_key = key.upper()
+            if env_key not in source:
+                source[env_key] = str(value) if not isinstance(value, bool) else ("true" if value else "false")
+
+        # Layer 3: CLI args override config file and env
+        if folder:
+            source["AGENT_ALLOWED_ROOTS"] = folder
+        if commands is not None:
+            source["AGENT_ENABLE_COMMANDS"] = "true" if commands else "false"
+        if public is not None:
+            source["PUBLIC_EXPOSURE"] = "true" if public else "false"
+        if port is not None:
+            source["MCP_PORT"] = str(port)
+
+        return cls.from_env(source)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -160,6 +223,22 @@ class Config:
         if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ConfigError(f"Unsupported LOG_LEVEL {log_level!r}.")
 
+        # Parse allowed_roots: support both string (env var) and list (config file)
+        raw_roots = source.get("AGENT_ALLOWED_ROOTS", "")
+        if raw_roots.startswith("["):
+            # JSON array from config file
+            try:
+                roots_list = json.loads(raw_roots)
+                allowed_roots = tuple(
+                    Path(os.path.abspath(os.path.expanduser(str(r))))
+                    for r in roots_list
+                    if r
+                )
+            except (json.JSONDecodeError, TypeError):
+                allowed_roots = parse_allowed_roots(raw_roots)
+        else:
+            allowed_roots = parse_allowed_roots(raw_roots)
+
         config = cls(
             mcp_host=source.get("MCP_HOST", "127.0.0.1").strip() or "127.0.0.1",
             mcp_port=mcp_port,
@@ -167,9 +246,7 @@ class Config:
             opencode_url=opencode_url,
             opencode_username=source.get("OPENCODE_USERNAME", "").strip(),
             opencode_password=source.get("OPENCODE_PASSWORD", ""),
-            allowed_roots=parse_allowed_roots(
-                source.get("AGENT_ALLOWED_ROOTS")
-            ),
+            allowed_roots=allowed_roots,
             log_level=log_level,
             opencode_connect_timeout=_parse_float_env(
                 source, "OPENCODE_CONNECT_TIMEOUT", 5.0
@@ -192,6 +269,9 @@ class Config:
             gateway_token=source.get("AGENT_GATEWAY_TOKEN", ""),
             insecure_no_token_opt_out=_parse_bool_env(
                 source, "AGENT_INSECURE_NO_TOKEN_OPT_OUT", False
+            ),
+            public_exposure=_parse_bool_env(
+                source, "PUBLIC_EXPOSURE", False
             ),
             max_read_bytes=_parse_int_env(
                 source, "AGENT_MAX_READ_BYTES", DEFAULT_MAX_READ_BYTES,
@@ -221,13 +301,12 @@ class Config:
         return config
 
     def validate_public_exposure(self) -> None:
-        """Fail clearly when public exposure is configured without a token.
+        """Validate public exposure settings."""
+        # New simplified path: public_exposure flag
+        if self.public_exposure:
+            return  # No token required, no host checking
 
-        The gateway always registers mutating tools (file_write and
-        friends), so exposing it publicly with no bearer token is never
-        acceptable by default. AGENT_INSECURE_NO_TOKEN_OPT_OUT exists
-        only for explicitly documented local experimentation.
-        """
+        # Legacy path: PUBLIC_MCP_HOST or non-loopback bind
         needs_token = False
         reason = ""
         if self.public_mcp_host:
@@ -261,6 +340,7 @@ class Config:
         return {
             "mcp_host": self.mcp_host,
             "mcp_port": self.mcp_port,
+            "public_exposure": self.public_exposure,
             "public_mcp_host": self.public_mcp_host or "(none)",
             "opencode_url": self.opencode_url,
             "opencode_auth": self.auth_enabled(),

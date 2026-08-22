@@ -93,14 +93,24 @@ def normalize_public_host(value: str) -> str:
 
 def build_transport_security(
     public_mcp_host: str,
+    public_exposure: bool = False,
 ) -> TransportSecuritySettings:
     """Transport security for the Streamable HTTP endpoint.
 
-    Localhost is always allowed; PUBLIC_MCP_HOST (e.g. the hostname of a
-    Cloudflare Quick Tunnel) is added to allowed hosts and origins. DNS
-    rebinding protection stays enabled - this is what makes Cloudflare
-    forwarding work without disabling security checks.
+    When public_exposure is True, DNS rebinding protection is disabled
+    entirely (any host/origin is accepted). This is the simplified path
+    for Cloudflare Quick Tunnel users.
+
+    When public_exposure is False, localhost is always allowed and
+    PUBLIC_MCP_HOST is added to the allowlist if set.
     """
+    if public_exposure:
+        return TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+            allowed_hosts=[],
+            allowed_origins=[],
+        )
+
     allowed_hosts = [
         "127.0.0.1",
         "127.0.0.1:*",
@@ -182,7 +192,10 @@ def build_server(config: Config) -> MCPServer:
 
 def build_http_app(config: Config, mcp: MCPServer):
     """Assemble the wrapped Streamable HTTP app (with bearer auth)."""
-    transport_security = build_transport_security(config.public_mcp_host)
+    transport_security = build_transport_security(
+        config.public_mcp_host,
+        public_exposure=config.public_exposure,
+    )
     app = mcp.streamable_http_app(
         streamable_http_path="/mcp",
         json_response=True,
@@ -206,21 +219,12 @@ def run(config: Config) -> None:
     print(f"Version         : {__version__}")
     print(f"MCP endpoint    : http://{config.mcp_host}:{config.mcp_port}/mcp")
     print(
-        "Public MCP host : "
-        f"{config.public_mcp_host or '(localhost only)'}"
-    )
-    print(
-        "Bearer token    : "
-        f"{'configured' if config.token_auth_enabled() else 'not set (localhost only)'}"
-    )
-    print("Direct mode     : enabled (deterministic tools, no LLM)")
-    print(
-        "OpenCode agent  : "
-        f"{'enabled' if config.enable_opencode_agent else 'disabled'}"
+        "Public exposure : "
+        f"{'enabled (any host)' if config.public_exposure else 'disabled (localhost only)'}"
     )
     print(
         "Commands        : "
-        f"{'enabled' if config.enable_commands else 'disabled (AGENT_ENABLE_COMMANDS)'}"
+        f"{'enabled' if config.enable_commands else 'disabled'}"
     )
     print(
         "Allowed roots   : "
@@ -245,7 +249,7 @@ def main() -> None:
     except ImportError:
         pass
 
-    config = Config.from_env()
+    config = Config.build()
     run(config)
 
 
