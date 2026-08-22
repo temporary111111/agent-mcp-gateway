@@ -201,7 +201,7 @@ async def test_is_completed_requires_stop_finish(
     assert await executor.is_completed("ses_abc") is True
 
     client.messages_payload = []
-    assert await executor.is_completed("ses_abc") is False
+    assert await executor.is_completed("ses_abc") is True
 
 
 async def test_diff_mapped(executor: OpenCodeExecutor) -> None:

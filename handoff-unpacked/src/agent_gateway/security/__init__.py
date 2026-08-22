@@ -1,0 +1,1 @@
+"""Directory authorization for the agent gateway."""

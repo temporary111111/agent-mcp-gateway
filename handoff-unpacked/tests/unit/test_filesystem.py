@@ -82,7 +82,7 @@ def test_file_read_max_bytes_truncates(manager, ws: str) -> None:
 
 def test_file_read_offset(manager, ws: str) -> None:
     _, root = manager
-    (root / "t.txt").write_bytes(b"aaaa\nbbbb\ncccc\n")
+    (root / "t.txt").write_text("aaaa\nbbbb\ncccc\n", encoding="utf-8")
     result = file_read(manager[0], ws, "t.txt", offset_bytes=5, max_lines=10)
     assert "bbbb" in result["content"]
     assert result["start_line"] == 2
@@ -183,8 +183,7 @@ def test_file_replace_exact(manager, ws: str) -> None:
 def test_file_replace_occurrence(manager, ws: str) -> None:
     _, root = manager
     (root / "f.txt").write_text("foo foo foo", encoding="utf-8")
-    current = sha256_file(root / "f.txt")
-    result = file_replace(manager[0], ws, "f.txt", "foo", "bar", occurrence=2, expected_sha256=current)
+    result = file_replace(manager[0], ws, "f.txt", "foo", "bar", occurrence=2)
     assert result["replaced"] == 1
     assert (root / "f.txt").read_text(encoding="utf-8") == "foo bar foo"
 
@@ -192,9 +191,8 @@ def test_file_replace_occurrence(manager, ws: str) -> None:
 def test_file_replace_missing_needle(manager, ws: str) -> None:
     _, root = manager
     (root / "f.txt").write_text("hello", encoding="utf-8")
-    current = sha256_file(root / "f.txt")
     with pytest.raises(InvalidRequestError):
-        file_replace(manager[0], ws, "f.txt", "zzz", "y", expected_sha256=current)
+        file_replace(manager[0], ws, "f.txt", "zzz", "y")
 
 
 def test_file_replace_stale_hash_conflict(manager, ws: str) -> None:
@@ -210,12 +208,11 @@ def test_patch_modify_existing(manager, ws: str) -> None:
         "def add(a, b):\n    return a + b\n\nprint(add(1, 2))\n",
         encoding="utf-8",
     )
-    current = sha256_file(root / "app.py")
     patch = (
         "--- a/app.py\n+++ b/app.py\n"
         "@@ -1,4 +1,4 @@\n def add(a, b):\n-    return a + b\n+    return a - b\n \n print(add(1, 2))\n"
     )
-    result = file_apply_patch(manager[0], ws, "app.py", patch, expected_sha256=current)
+    result = file_apply_patch(manager[0], ws, "app.py", patch)
     assert result["hunks"] == 1
     assert "return a - b" in (root / "app.py").read_text(encoding="utf-8")
 
@@ -236,12 +233,11 @@ def test_patch_create_new_file(manager, ws: str) -> None:
 def test_patch_no_newline_marker(manager, ws: str) -> None:
     _, root = manager
     (root / "f.txt").write_text("line1\nline2", encoding="utf-8")  # no trailing NL
-    current = sha256_file(root / "f.txt")
     patch = (
         "--- a/f.txt\n+++ b/f.txt\n"
         "@@ -1,2 +1,2 @@\n line1\n-line2\n\\ No newline at end of file\n+line2 changed\n"
     )
-    result = file_apply_patch(manager[0], ws, "f.txt", patch, expected_sha256=current)
+    result = file_apply_patch(manager[0], ws, "f.txt", patch)
     assert (root / "f.txt").read_text(encoding="utf-8") == "line1\nline2 changed"
 
 
@@ -250,13 +246,12 @@ def test_patch_multiple_hunks(manager, ws: str) -> None:
     (root / "f.txt").write_text(
         "one\ntwo\nthree\nfour\nfive\n", encoding="utf-8"
     )
-    current = sha256_file(root / "f.txt")
     patch = (
         "--- a/f.txt\n+++ b/f.txt\n"
         "@@ -1,3 +1,3 @@\n one\n-two\n+2\n three\n"
         "@@ -4,2 +4,2 @@\n four\n-five\n+5\n"
     )
-    result = file_apply_patch(manager[0], ws, "f.txt", patch, expected_sha256=current)
+    result = file_apply_patch(manager[0], ws, "f.txt", patch)
     assert result["hunks"] == 2
     assert (root / "f.txt").read_text(encoding="utf-8") == "one\n2\nthree\nfour\n5\n"
 
@@ -270,7 +265,7 @@ def test_patch_nonmatching_hunk_leaves_file_untouched(manager, ws: str) -> None:
         "@@ -1,1 +1,1 @@\n-totally different\n+changed\n"
     )
     with pytest.raises(InvalidRequestError):
-        file_apply_patch(manager[0], ws, "f.txt", patch, expected_sha256=before)
+        file_apply_patch(manager[0], ws, "f.txt", patch)
     assert sha256_file(root / "f.txt") == before
 
 

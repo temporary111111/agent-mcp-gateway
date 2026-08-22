@@ -1,0 +1,1 @@
+"""MCP tool registration for the agent gateway."""

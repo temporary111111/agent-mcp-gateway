@@ -211,9 +211,6 @@ def file_read(
     lines = text.splitlines()
     start_line = 1
     if offset_bytes > 0:
-        # Count newlines in the raw bytes up to offset_bytes.
-        # On Windows, files may use \r\n; if offset lands on \n after
-        # \r, it still counts as a newline boundary.
         with target.open("rb") as fh:
             fh.seek(0)
             prefix = fh.read(offset_bytes)
