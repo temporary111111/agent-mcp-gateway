@@ -502,3 +502,139 @@ def register_direct_tools(
     ) -> dict:
         """Read-only display of a commit (metadata + diff)."""
         return _direct.git_show(manager, workspace_id, rev=rev, path=path)
+
+    # --- Web tools (no workspace required) ---
+
+    @mcp.tool(
+        title="Fetch a web page",
+        annotations=READ_ONLY,
+    )
+    @tool_handler
+    async def web_fetch(
+        url: Annotated[
+            str,
+            Field(description="URL to fetch (http:// or https://)."),
+        ] = ...,
+        max_chars: Annotated[
+            int,
+            Field(
+                ge=100,
+                le=200_000,
+                description="Maximum characters to return.",
+            ),
+        ] = 50_000,
+    ) -> dict:
+        """Fetch a URL and return its text content. Useful for reading
+        documentation, StackOverflow answers, GitHub pages, etc."""
+        return _direct.web_fetch(url, max_chars=max_chars)
+
+    @mcp.tool(
+        title="Search the web",
+        annotations=READ_ONLY,
+    )
+    @tool_handler
+    async def web_search(
+        query: Annotated[
+            str,
+            Field(min_length=1, description="Search query."),
+        ] = ...,
+        max_results: Annotated[
+            int,
+            Field(ge=1, le=20, description="Maximum results to return."),
+        ] = 10,
+    ) -> dict:
+        """Search the web using DuckDuckGo. Returns titles, URLs, and
+        snippets. No API key required."""
+        return _direct.web_search(query, max_results=max_results)
+
+    # --- Todo tools (no workspace required) ---
+
+    @mcp.tool(
+        title="Write todo list",
+        annotations=MUTATING,
+    )
+    @tool_handler
+    async def todo_write(
+        items: Annotated[
+            list[dict],
+            Field(
+                description=(
+                    "List of todo items. Each: {content: str, status?: "
+                    "'pending'|'in_progress'|'completed'}."
+                ),
+            ),
+        ] = ...,
+    ) -> dict:
+        """Replace the entire task list. Use this to plan and track
+        multi-step work. Set status to track progress."""
+        return _direct.todo_write(items)
+
+    @mcp.tool(
+        title="Read todo list",
+        annotations=READ_ONLY,
+    )
+    @tool_handler
+    async def todo_read() -> dict:
+        """Read the current task list and progress."""
+        return _direct.todo_read()
+
+    # --- LSP tools (workspace required) ---
+
+    @mcp.tool(
+        title="Symbol info (hover)",
+        annotations=READ_ONLY,
+    )
+    @tool_handler
+    async def lsp_info(
+        workspace_id: WORKSPACE_ID = ...,
+        path: RELPATH = ...,
+        line: Annotated[
+            int,
+            Field(ge=0, description="Line number (0-based)."),
+        ] = ...,
+        character: Annotated[
+            int,
+            Field(ge=0, description="Column number (0-based)."),
+        ] = 0,
+    ) -> dict:
+        """Get hover information (type, docs) for a symbol at a position.
+        Requires a language server for full semantic analysis."""
+        return _direct.lsp_info(manager, workspace_id, path, line, character)
+
+    @mcp.tool(
+        title="Find references",
+        annotations=READ_ONLY,
+    )
+    @tool_handler
+    async def lsp_references(
+        workspace_id: WORKSPACE_ID = ...,
+        path: RELPATH = ...,
+        line: Annotated[
+            int,
+            Field(ge=0, description="Line number (0-based)."),
+        ] = ...,
+        character: Annotated[
+            int,
+            Field(ge=0, description="Column number (0-based)."),
+        ] = 0,
+    ) -> dict:
+        """Find all references to the symbol at a position.
+        Falls back to text-based search when no LSP server is available."""
+        return _direct.lsp_references(manager, workspace_id, path, line, character)
+
+    # --- Browser tools (no workspace required) ---
+
+    @mcp.tool(
+        title="Open web page",
+        annotations=READ_ONLY,
+    )
+    @tool_handler
+    async def browser_open(
+        url: Annotated[
+            str,
+            Field(description="URL to open (http:// or https://)."),
+        ] = ...,
+    ) -> dict:
+        """Open a web page and return its content, links, and forms.
+        Useful for browsing documentation or web interfaces."""
+        return _direct.browser_open(url)
