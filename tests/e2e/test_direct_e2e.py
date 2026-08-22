@@ -309,3 +309,74 @@ async def _run_direct_loop(port: int, repo: Path) -> None:
                 "file_read", {"workspace_id": ws, "path": "../README.md"}
             )
             assert bad_read.is_error
+
+
+def _spawn_server_commands_disabled(port: int, repo: Path) -> subprocess.Popen:
+    env = dict(os.environ)
+    env.update(
+        {
+            "MCP_PORT": str(port),
+            "MCP_HOST": "127.0.0.1",
+            "AGENT_ALLOWED_ROOTS": str(repo),
+            "AGENT_GATEWAY_TOKEN": TOKEN,
+            "LOG_LEVEL": "WARNING",
+        }
+    )
+    env.pop("ENABLE_OPENCODE_AGENT", None)
+    env.pop("AGENT_ENABLE_COMMANDS", None)
+    server = subprocess.Popen(
+        [sys.executable, "-m", "agent_gateway.server"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    threading.Thread(
+        target=_drain, args=(server.stdout, []), daemon=True
+    ).start()
+    threading.Thread(
+        target=_drain, args=(server.stderr, []), daemon=True
+    ).start()
+    return server
+
+
+@pytest.mark.e2e
+async def test_commands_disabled_process_run_absent(
+    work_repo: Path,
+) -> None:
+    port = _free_port()
+    server = _spawn_server_commands_disabled(port, work_repo)
+    try:
+        assert await wait_for_port(port), "Gateway server did not start"
+
+        import httpx2
+
+        from mcp.client.session import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+
+        url = f"http://127.0.0.1:{port}/mcp"
+        auth_client = httpx2.AsyncClient(
+            headers={"Authorization": f"Bearer {TOKEN}"}, timeout=30.0
+        )
+        async with streamable_http_client(url, http_client=auth_client) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                await session.initialize()
+
+                tools_result = await session.list_tools()
+                tool_names = {tool.name for tool in tools_result.tools}
+
+                assert "process_run" not in tool_names, (
+                    "process_run must NOT be registered when "
+                    "AGENT_ENABLE_COMMANDS is not set"
+                )
+
+                health_result = await session.call_tool("gateway_health", {})
+                health = json.loads(health_result.content[0].text)
+                assert health["commands_enabled"] is False
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=5)

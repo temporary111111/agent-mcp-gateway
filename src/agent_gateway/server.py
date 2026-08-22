@@ -153,7 +153,8 @@ def build_server(config: Config) -> MCPServer:
     if config.enable_opencode_agent:
         executors = build_executors(config)
         delegation = DelegationService(
-            executors, path_policy, opencode_enabled=True
+            executors, path_policy, opencode_enabled=True,
+            commands_enabled=config.enable_commands,
         )
         from .tools.delegation import register_delegation_tools
         from .tools.opencode import register_opencode_tools
@@ -168,7 +169,10 @@ def build_server(config: Config) -> MCPServer:
             ", ".join(sorted(executors)),
         )
     else:
-        delegation = DelegationService({}, path_policy, opencode_enabled=False)
+        delegation = DelegationService(
+            {}, path_policy, opencode_enabled=False,
+            commands_enabled=config.enable_commands,
+        )
         register_gateway_tools(mcp, delegation)
         logger.info("OpenCode agent mode: disabled (default)")
 

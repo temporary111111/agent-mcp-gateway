@@ -372,52 +372,53 @@ def register_direct_tools(
             expected_sha256=expected_sha256,
         )
 
-    @mcp.tool(
-        title="Run a process",
-        annotations=MUTATING,
-    )
-    @tool_handler
-    async def process_run(
-        workspace_id: WORKSPACE_ID = ...,
-        executable: Annotated[
-            str,
-            Field(
-                description=(
-                    "Executable: a bare name resolved via PATH (python, "
-                    "git, npm), an absolute path, or a workspace-relative "
-                    "path."
-                ),
-            ),
-        ] = ...,
-        args: Annotated[
-            list[str],
-            Field(
-                description="Argument array (no shell string interpretation).",
-            ),
-        ] = ...,
-        cwd_relative: DIRPATH = ".",
-        timeout_seconds: Annotated[
-            int,
-            Field(
-                ge=1,
-                le=config.process_timeout_max,
-                description="Hard deadline; the process tree is killed.",
-            ),
-        ] = 30,
-    ) -> dict:
-        """Launch a process inside the workspace with argument-array
-        semantics, hard timeout, and output caps. Disabled unless
-        AGENT_ENABLE_COMMANDS=true. A launched process runs with the
-        gateway user's OS privileges."""
-        return _direct.process_run(
-            config,
-            manager,
-            workspace_id,
-            executable,
-            args,
-            cwd_relative=cwd_relative,
-            timeout_seconds=timeout_seconds,
+    if config.enable_commands:
+
+        @mcp.tool(
+            title="Run a process",
+            annotations=MUTATING,
         )
+        @tool_handler
+        async def process_run(
+            workspace_id: WORKSPACE_ID = ...,
+            executable: Annotated[
+                str,
+                Field(
+                    description=(
+                        "Executable: a bare name resolved via PATH (python, "
+                        "git, npm), an absolute path, or a workspace-relative "
+                        "path."
+                    ),
+                ),
+            ] = ...,
+            args: Annotated[
+                list[str],
+                Field(
+                    description="Argument array (no shell string interpretation).",
+                ),
+            ] = ...,
+            cwd_relative: DIRPATH = ".",
+            timeout_seconds: Annotated[
+                int,
+                Field(
+                    ge=1,
+                    le=config.process_timeout_max,
+                    description="Hard deadline; the process tree is killed.",
+                ),
+            ] = 30,
+        ) -> dict:
+            """Launch a process inside the workspace with argument-array
+            semantics, hard timeout, and output caps. A launched process
+            runs with the gateway user's OS privileges."""
+            return _direct.process_run(
+                config,
+                manager,
+                workspace_id,
+                executable,
+                args,
+                cwd_relative=cwd_relative,
+                timeout_seconds=timeout_seconds,
+            )
 
     @mcp.tool(
         title="Git status",
