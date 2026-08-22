@@ -5,6 +5,9 @@ Explicitly opt-in: without ``AGENT_ENABLE_COMMANDS=true`` every
 argument-array semantics (no shell string). Hard timeout and output caps;
 on timeout the process tree is killed.
 
+Includes doom loop detection: warns when the same command is executed
+3+ times with identical arguments in sequence.
+
 Security note (documented, not hidden): a launched process runs with the
 gateway user's OS privileges. AGENT_ALLOWED_ROOTS constrains where a
 task can point the gateway, but it cannot sandbox what a launched
@@ -26,6 +29,40 @@ from ..workspaces.manager import WorkspaceManager
 
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 _POLL_INTERVAL = 0.05
+_DOOM_LOOP_THRESHOLD = 3
+
+
+class _DoomLoopTracker:
+    """Track recent command executions to detect doom loops."""
+
+    def __init__(self) -> None:
+        self._recent: list[tuple[str, tuple[str, ...]]] = []
+        self._lock = threading.Lock()
+
+    def record(self, command: str, args: tuple[str, ...]) -> bool:
+        """Record a command execution. Returns True if doom loop detected."""
+        with self._lock:
+            key = (command, args)
+            self._recent.append(key)
+            # Keep only last 10 entries
+            if len(self._recent) > 10:
+                self._recent = self._recent[-10:]
+
+            # Check for doom loop: last N entries are identical
+            if len(self._recent) >= _DOOM_LOOP_THRESHOLD:
+                last_n = self._recent[-_DOOM_LOOP_THRESHOLD:]
+                if all(entry == last_n[0] for entry in last_n):
+                    return True
+            return False
+
+    def clear(self) -> None:
+        """Clear the tracking history."""
+        with self._lock:
+            self._recent.clear()
+
+
+# Process-global doom loop tracker
+_doom_tracker = _DoomLoopTracker()
 
 
 class _OutputCapture:
@@ -122,6 +159,10 @@ def process_run(
             "cwd_relative must point to a directory inside the workspace."
         )
 
+    # Doom loop detection
+    cmd_tuple = (command, tuple(args))
+    doom_loop_detected = _doom_tracker.record(command, tuple(args))
+
     # Background mode: detach the process and return immediately
     if background:
         try:
@@ -205,7 +246,7 @@ def process_run(
         thread.join(timeout=5)
 
     duration = round(time.monotonic() - started, 3)
-    return {
+    result = {
         "workspace_id": workspace_id,
         "command": [executable, *args],
         "cwd": str(cwd),
@@ -217,6 +258,16 @@ def process_run(
         "truncated_stdout": capture_out.truncated,
         "truncated_stderr": capture_err.truncated,
     }
+
+    if doom_loop_detected:
+        result["doom_loop_warning"] = (
+            f"WARNING: The same command has been executed {_DOOM_LOOP_THRESHOLD} "
+            f"times in a row: {executable} {' '.join(args)[:100]}. "
+            f"This may indicate a loop. Consider trying a different approach."
+        )
+        _doom_tracker.clear()
+
+    return result
 
 
 def _kill_tree(process: subprocess.Popen) -> None:

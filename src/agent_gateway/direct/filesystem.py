@@ -18,6 +18,7 @@ from pathlib import Path
 from ..errors import HashConflictError, InvalidRequestError
 from ..security.paths import PathPolicy
 from ..workspaces.manager import WorkspaceManager
+from .edit_match import find_match, replace_text
 from .hashing import is_probably_binary, read_bytes_capped, sha256_bytes, sha256_file
 
 _DEFAULT_SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"}
@@ -406,7 +407,19 @@ def file_replace(
     occurrence: int = 0,
     expected_sha256: str | None = None,
 ) -> dict:
-    """Replace ``old_string`` in a text file.
+    """Replace ``old_string`` in a text file using 9-layer fuzzy matching.
+
+    Tries progressively looser matching strategies to handle imprecise
+    LLM output:
+    1. Exact match
+    2. Line-trimmed match
+    3. Whitespace-normalized match
+    4. Indentation-flexible match
+    5. Escape-normalized match
+    6. Trimmed-boundary match
+    7. Block-anchor match (first+last lines as anchors)
+    8. Context-aware match (first+last lines + 50% middle)
+    9. Multi-occurrence exact match
 
     occurrence == 0 replaces all occurrences; positive n replaces only
     the n-th occurrence (1-based).
@@ -418,27 +431,55 @@ def file_replace(
         raise InvalidRequestError("old_string must not be empty.")
     text, _ = _existing_text(target)
 
-    count = text.count(old_string)
-    if count == 0:
-        raise InvalidRequestError(
-            "old_string was not found in the file.",
-            detail={"path": _rel_of(root, target), "needle": old_string[:120]},
-        )
-    if occurrence > 0 and occurrence > count:
-        raise InvalidRequestError(
-            f"Occurrence {occurrence} requested but only {count} found.",
-            detail=str(target),
-        )
-
     if occurrence == 0:
-        new_text = text.replace(old_string, new_string)
+        # Replace all occurrences using 9-layer matching
+        new_text, count, match_type = replace_text(text, old_string, new_string, replace_all=True)
+        if count == 0:
+            # Try find_match for better error message
+            found = find_match(text, old_string)
+            if found:
+                raise InvalidRequestError(
+                    "old_string was found but could not be uniquely matched. "
+                    "Try providing more context or use file_apply_patch.",
+                    detail={
+                        "path": _rel_of(root, target),
+                        "needle": old_string[:120],
+                        "found_preview": found[:120],
+                    },
+                )
+            raise InvalidRequestError(
+                "old_string was not found in the file.",
+                detail={"path": _rel_of(root, target), "needle": old_string[:120]},
+            )
         replaced = count
     else:
-        position = -1
-        for _ in range(occurrence):
-            position = text.find(old_string, position + 1)
-        new_text = text[:position] + new_string + text[position + len(old_string):]
-        replaced = 1
+        # Single occurrence replacement using 9-layer matching
+        # First try exact match for occurrence-based replacement
+        count = text.count(old_string)
+        if count > 0:
+            # Exact match found — use it directly
+            if occurrence > count:
+                raise InvalidRequestError(
+                    f"Occurrence {occurrence} requested but only {count} found.",
+                    detail=str(target),
+                )
+            position = -1
+            for _ in range(occurrence):
+                position = text.find(old_string, position + 1)
+            new_text = text[:position] + new_string + text[position + len(old_string):]
+            replaced = 1
+        else:
+            # No exact match — try 9-layer fuzzy matching
+            found = find_match(text, old_string)
+            if not found:
+                raise InvalidRequestError(
+                    "old_string was not found in the file.",
+                    detail={"path": _rel_of(root, target), "needle": old_string[:120]},
+                )
+            # For fuzzy match, replace the first occurrence of the matched text
+            idx = text.find(found)
+            new_text = text[:idx] + new_string + text[idx + len(found):]
+            replaced = 1
 
     data = new_text.encode("utf-8")
     _atomic_write_bytes(target, data)
